@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI News Assistant</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--tx:#1b1f2a;--mut:#667;--ac:#4f46e5;--bd:#e3e6ef}
+@media(prefers-color-scheme:dark){:root{--bg:#12141c;--card:#1b1e29;--tx:#e8eaf2;--mut:#98a;--bd:#2a2f40}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.5 system-ui,sans-serif}
+main{max-width:760px;margin:0 auto;padding:24px 16px}
+h1{font-size:1.5rem;margin:0 0 4px}.sub{color:var(--mut);margin:0 0 16px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+input{flex:1;min-width:200px;padding:10px 12px;border:1px solid var(--bd);border-radius:10px;background:var(--card);color:var(--tx);font:inherit}
+button{padding:10px 16px;border:0;border-radius:10px;background:var(--ac);color:#fff;font:inherit;cursor:pointer}
+button.alt{background:transparent;color:var(--ac);border:1px solid var(--ac)}button:disabled{opacity:.5;cursor:wait}
+.chips{margin:10px 0 16px;display:flex;gap:6px;flex-wrap:wrap}.chips button{padding:4px 10px;font-size:.85rem}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px 16px;margin-top:14px}
+ol{padding-left:20px;margin:8px 0 0}li{margin:6px 0}a{color:var(--ac)}small{color:var(--mut)}
+</style></head><body><main>
+<h1>🧠 AI News Assistant</h1>
+<p class="sub">Live Google News headlines, summarized Inshorts-style by an AI model running in your browser.</p>
+<div class="row"><input id="q" placeholder="Topic, e.g. AI trends (empty = top headlines)">
+<button id="go">Get news</button></div>
+<div class="chips" id="chips"></div>
+<div id="out"></div>
+<script>
+const $ = id => document.getElementById(id), out = $("out");
+// PASTE YOUR CLOUDFLARE WORKER URL BETWEEN THE QUOTES (e.g. "https://news-proxy.yourname.workers.dev")
+const MY_PROXY = "";
+let items = [], summarizer = null;
+
+["Top headlines","World news","AI trends","Space exploration","Indian politics"].forEach(t=>{
+  const b=document.createElement("button");b.className="alt";b.textContent=t;
+  b.onclick=()=>{$("q").value=t;load();};$("chips").append(b);});
+$("go").onclick=load; $("q").onkeydown=e=>e.key==="Enter"&&load();
+
+const esc=s=>s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const rssUrl=q=>{const p="hl=en-IN&gl=IN&ceid=IN:en";
+  return /^(|top|top news|headlines|top headlines|news|latest news)$/i.test(q)
+    ? `https://news.google.com/rss?${p}`
+    : `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&${p}`;};
+const split=t=>{const i=t.lastIndexOf(" - ");return i>0?[t.slice(0,i),t.slice(i+3)]:[t,""];};
+
+const withTimeout=(url,ms=9000)=>{const c=new AbortController(),t=setTimeout(()=>c.abort(),ms);
+  return fetch(url,{signal:c.signal}).finally(()=>clearTimeout(t));};
+const parseXML=t=>[...new DOMParser().parseFromString(t,"text/xml").querySelectorAll("item")].slice(0,10)
+  .map(i=>({title:i.querySelector("title")?.textContent||"",link:i.querySelector("link")?.textContent||""}));
+
+async function fetchNews(q){
+  const enc=encodeURIComponent(rssUrl(q)), errs=[];
+  const tries=[
+    async()=>{const r=await withTimeout("/api/news?q="+encodeURIComponent(q));if(!r.ok)throw new Error("api");return parseXML(await r.text());},
+    ...(MY_PROXY?[async()=>parseXML(await(await withTimeout(MY_PROXY+"?url="+enc)).text())]:[]),
+    async()=>((await(await withTimeout("https://api.rss2json.com/v1/api.json?rss_url="+enc)).json()).items||[]).slice(0,10).map(i=>({title:i.title,link:i.link})),
+    async()=>parseXML(await(await withTimeout("https://corsproxy.io/?url="+enc)).text()),
+    async()=>parseXML(await(await withTimeout("https://api.allorigins.win/raw?url="+enc)).text()),
+    async()=>parseXML(await(await withTimeout("https://api.codetabs.com/v1/proxy?quest="+enc)).text()),
+  ];
+  for(const [n,t] of tries.entries()){
+    try{const r=await t(); if(r.length) return r; errs.push(`#${n+1} empty`);}
+    catch(e){errs.push(`#${n+1} ${e.name}`);}
+  }
+  console.warn("News proxies failed:",errs); return [];
+}
+
+async function wiki(q){
+  const u=`https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(q||"India")}&gsrlimit=1&prop=extracts|info&inprop=url&exintro=1&explaintext=1&format=json&origin=*`;
+  const j=await(await withTimeout(u)).json(), p=Object.values(j.query?.pages||{})[0];
+  return p?{title:p.title,link:p.fullurl,text:(p.extract||"").slice(0,2500)}:null;
+}
+
+let srcText="";
+async function load(){
+  const q=$("q").value.trim(); $("go").disabled=true;
+  out.innerHTML='<div class="card">Fetching headlines…</div>';
+  try{
+    items=await fetchNews(q);
+    let body, note="";
+    if(items.length){
+      srcText=items.map(i=>split(i.title)[0].replace(/\.$/,"")).join(". ")+".";
+      body=`<b>🔗 Headlines</b><ol>`+items.map(i=>{const [h,s]=split(i.title);
+        return `<li><a href="${esc(i.link)}" target="_blank" rel="noopener">${esc(h)}</a>${s?` — <small>${esc(s)}</small>`:""}</li>`}).join("")+`</ol>`;
+    }else{
+      const w=await wiki(q);
+      if(!w||!w.text){out.innerHTML='<div class="card">😕 Nothing found for that query. Try another topic.</div>';return;}
+      srcText=w.text; items=[w];
+      body=`<b>📚 No live news available — background from Wikipedia</b><p><a href="${esc(w.link)}" target="_blank" rel="noopener">${esc(w.title)}</a></p>`;
+    }
+    out.innerHTML=`<div class="card">${body}<p><small>🕒 ${new Date().toLocaleString()}</small></p></div>
+      <div class="card"><b>📰 Inshorts-style AI summary</b><p id="st"><button id="sb">Generate AI summary</button><br>
+      <small>First use downloads the model (~100–200 MB, cached afterwards).</small></p></div>`;
+    $("sb").onclick=summarize;
+  }catch(e){out.innerHTML=`<div class="card">⚠️ Something went wrong: ${esc(String(e))}. Check your connection and try again.</div>`;}
+  finally{$("go").disabled=false;}
+}
+
+async function summarize(){
+  const st=$("st"); st.textContent="Loading model…";
+  try{
+    if(!summarizer){
+      const { pipeline, env } = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3");
+      env.allowLocalModels=false;
+      summarizer=await pipeline("summarization","Xenova/distilbart-cnn-6-6",{
+      progress_callback:p=>{if(p.status==="progress")st.textContent=`Downloading model… ${Math.round(p.progress)}%`;}});
+    }
+    st.textContent="Summarizing…";
+    const r=await summarizer(srcText,{max_new_tokens:90,min_length:30});
+    st.innerHTML=esc(r[0].summary_text)+`<br><small>Generated in your browser with DistilBART (Transformers.js).</small>`;
+  }catch(e){st.textContent="⚠️ Summary failed: "+e;}
+}
+load();
+</script></main></body></html>
