@@ -1,6 +1,0 @@
-gradio
-transformers
-torch
-feedparser
-wikipedia
-sentencepiece
